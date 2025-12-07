@@ -32,9 +32,18 @@ def get_project_root():
 
 def read_resource_file(path):
 
-    assert "./res/" in path, 'Path should include ./res/'
+    # Check if path contains 'res/' (either as ./res/ or agent/res/ or absolute path with res/)
+    # Also handle absolute paths that have already been assembled
+    if os.path.isabs(path):
+        # If it's already an absolute path, check if it contains 'res' directory
+        assert "res" in path, f'Path should include res/ directory. Got: {path}'
+        file_path = path
+    else:
+        # If it's a relative path, check if it contains res/ and assemble it
+        assert "res/" in path or "./res/" in path, f'Path should include res/ directory. Got: {path}'
+        file_path = assemble_project_path(path)
 
-    with open(assemble_project_path(path), "r", encoding="utf-8") as fd:
+    with open(file_path, "r", encoding="utf-8") as fd:
         return fd.read()
 
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using StardewValley.Menus;
 using HarmonyLib;
 using StardewValley.Locations;
@@ -14,7 +14,8 @@ namespace ActionSpace.patches
 
         public static void Prefix(string dialogue, Response[] responses, int width)
         {
-            System.Console.Out.Write($"{Environment.StackTrace.ToString()}");
+            // Debug code commented out - was printing stack traces
+            // System.Console.Out.Write($"{Environment.StackTrace.ToString()}");
 
         }
     }
@@ -27,7 +28,8 @@ namespace ActionSpace.patches
 
         public static void Postfix()
         {
-            System.Console.Out.Write($"{Environment.StackTrace.ToString()}");
+            // Debug code commented out - was printing stack traces
+            // System.Console.Out.Write($"{Environment.StackTrace.ToString()}");
         }
     }
 
@@ -39,7 +41,8 @@ namespace ActionSpace.patches
 
         public static void Postfix()
         {
-            System.Console.Out.Write($"{Environment.StackTrace.ToString()}");
+            // Debug code commented out - was printing stack traces
+            // System.Console.Out.Write($"{Environment.StackTrace.ToString()}");
         }
     }
 }

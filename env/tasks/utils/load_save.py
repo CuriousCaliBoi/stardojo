@@ -5,7 +5,9 @@ import time
 
 from .init_task import InitTaskProxy
 
-SAVE_SOURCE = "tasks/saves"
+# Get the directory where this file is located, then go up to env/tasks/saves
+_base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+SAVE_SOURCE = os.path.join(_base_dir, "env", "tasks", "saves")
 
 
 def get_save_path() -> str:

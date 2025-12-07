@@ -67,7 +67,9 @@ class SharedMemoryReader:
 
         os_type = platform.system()
         stardew_app_path = os.getenv("STARDEW_APP_PATH")
-        stardew_app_parent_path = os.path.dirname(stardew_app_path)
+        # Expand user path (handles ~ and $HOME)
+        stardew_app_path = os.path.expanduser(stardew_app_path) if stardew_app_path else None
+        stardew_app_parent_path = os.path.dirname(stardew_app_path) if stardew_app_path else None
         if os_type == "Linux":
             mmap_file = os.path.join(f"{stardew_app_parent_path}/shared_memory_{port}.bin")
         elif os_type == "Darwin":

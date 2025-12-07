@@ -1,4 +1,6 @@
 import os
+import base64
+import httpx
 from typing import (
     Any,
     Dict,
@@ -12,12 +14,27 @@ from typing import (
 )
 import json
 import re
+import io
 import asyncio
 
 import backoff
 import tiktoken
 import numpy as np
-from openai import OpenAI, AzureOpenAI, APIError, RateLimitError, APITimeoutError
+import cv2
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+try:
+    from google.genai.errors import APIError, ClientError, ServerError, UnknownFunctionCallArgumentError, UnsupportedFunctionError, FunctionInvocationError
+    from google.genai import types
+except ImportError:
+    # Fallback for older/newer versions
+    APIError = Exception
+    ClientError = Exception
+    ServerError = Exception
+    UnknownFunctionCallArgumentError = Exception
+    UnsupportedFunctionError = Exception
+    FunctionInvocationError = Exception
+    types = None
 
 from stardojo import constants
 from stardojo.provider.base import LLMProvider, EmbeddingProvider
@@ -31,31 +48,24 @@ config = Config()
 logger = Logger()
 
 MAX_TOKENS = {
-    "gpt-3.5-turbo-0301": 4097,
-    "gpt-3.5-turbo-0613": 4097,
-    "gpt-3.5-turbo-16k-0613": 16385,
+    "gemini-2.0-flash": 8192
 }
 
 PROVIDER_SETTING_KEY_VAR = "key_var"
-PROVIDER_SETTING_EMB_MODEL = "emb_model"
 PROVIDER_SETTING_COMP_MODEL = "comp_model"
-PROVIDER_SETTING_IS_AZURE = "is_azure"
-PROVIDER_SETTING_BASE_VAR = "base_var"       # Azure-speficic setting
-PROVIDER_SETTING_API_VERSION = "api_version" # Azure-speficic setting
-PROVIDER_SETTING_DEPLOYMENT_MAP = "models"   # Azure-speficic setting
 
 
-class OpenAIProvider(LLMProvider, EmbeddingProvider):
+class GeminiProvider(LLMProvider):
     """A class that wraps a given model"""
 
-    client: Any = None
+    client: Any = None  # genai.Client doesn't exist, using GenerativeModel instead
     llm_model: str = ""
     embedding_model: str = ""
 
     allowed_special: Union[Literal["all"], Set[str]] = set()
     disallowed_special: Union[Literal["all"], Set[str], Sequence[str]] = "all"
     chunk_size: int = 1000
-    embedding_ctx_length: int = 8191
+    embedding_ctx_length: int = 2 * 10 ** 6
     request_timeout: Optional[Union[float, Tuple[float, float]]] = None
     tiktoken_model_name: Optional[str] = None
 
@@ -63,9 +73,9 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
     skip_empty: bool = False
 
 
-    def __init__(self, is_opensource = False) -> None:
+    def __init__(self) -> None:
         """Initialize a class instance
-        is_opensource means whether it is opensource vlm (but use openai api).
+
         Args:
             cfg: Config object
 
@@ -73,7 +83,6 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
             None
         """
         self.retries = 5
-        self.is_opensource = is_opensource
 
 
     def init_provider(self, provider_cfg ) -> None:
@@ -92,177 +101,12 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
             conf_dict = load_json(path)
 
         key_var_name = conf_dict[PROVIDER_SETTING_KEY_VAR]
+        key = os.getenv(key_var_name)
+        self.client = genai.Client(api_key=key)
 
-        if conf_dict[PROVIDER_SETTING_IS_AZURE]:
-
-            key = os.getenv(key_var_name)
-            endpoint_var_name = conf_dict[PROVIDER_SETTING_BASE_VAR]
-            endpoint = os.getenv(endpoint_var_name)
-
-            self.client = AzureOpenAI(
-                api_key = key,
-                api_version = conf_dict[PROVIDER_SETTING_API_VERSION],
-                azure_endpoint = endpoint
-            )
-        else:
-            if self.is_opensource:
-                base_url = conf_dict["base_url"]
-                key = os.getenv("OPEN_SRC_KEY")
-                self.client = OpenAI(
-                    api_key = key,
-                    base_url = base_url
-                )
-
-            else:
-                key = os.getenv(key_var_name)
-                self.client = OpenAI(
-                    api_key=key
-                )
-
-        self.embedding_model = conf_dict[PROVIDER_SETTING_EMB_MODEL]
         self.llm_model = conf_dict[PROVIDER_SETTING_COMP_MODEL]
 
         return conf_dict
-
-    @property
-    def _emb_invocation_params(self) -> Dict:
-
-        openai_args = {
-            "model": self.embedding_model,
-        }
-
-        if self.provider_cfg[PROVIDER_SETTING_IS_AZURE]:
-            engine = self._get_azure_deployment_id_for_model(self.embedding_model)
-            openai_args = {
-                "model": self.embedding_model,
-            }
-
-        return openai_args
-
-    def embed_with_retry(self, **kwargs: Any) -> Any:
-        """Use backoff to retry the embedding call."""
-
-        @backoff.on_exception(
-            backoff.expo,
-            (
-                APIError,
-                RateLimitError,
-                APITimeoutError,
-            ),
-            max_tries=self.retries,
-            max_value=10,
-            jitter=None,
-        )
-        def _embed_with_retry(**kwargs: Any) -> Any:
-            response = self.client.embeddings.create(**kwargs)
-            if any(len(d.embedding) == 1 for d in response.data):
-                raise RuntimeError("OpenAI API returned an empty embedding")
-            return response
-
-        return _embed_with_retry(**kwargs)
-
-
-    def _get_len_safe_embeddings(
-        self,
-        texts: List[str],
-    ) -> List[List[float]]:
-        embeddings: List[List[float]] = [[] for _ in range(len(texts))]
-        try:
-            import tiktoken
-        except ImportError:
-            raise ImportError(
-                "Could not import tiktoken python package. "
-                "This is needed in order to for OpenAIEmbeddings. "
-                "Please install it with `pip install tiktoken`."
-            )
-
-        tokens = []
-        indices = []
-        model_name = self.tiktoken_model_name or self.embedding_model
-        try:
-            encoding = tiktoken.encoding_for_model(model_name)
-        except KeyError:
-            logger.warn("Warning: model not found. Using cl100k_base encoding.")
-            model = "cl100k_base"
-            encoding = tiktoken.get_encoding(model)
-        for i, text in enumerate(texts):
-            token = encoding.encode(
-                text,
-                allowed_special=self.allowed_special,
-                disallowed_special=self.disallowed_special,
-            )
-            for j in range(0, len(token), self.embedding_ctx_length):
-                tokens.append(token[j : j + self.embedding_ctx_length])
-                indices.append(i)
-
-        batched_embeddings: List[List[float]] = []
-        _chunk_size = self.chunk_size
-        _iter = range(0, len(tokens), _chunk_size)
-
-        for i in _iter:
-            response = self.embed_with_retry(
-                input=tokens[i : i + self.chunk_size],
-                **self._emb_invocation_params,
-            )
-            batched_embeddings.extend(r.embedding for r in response.data)
-
-        results: List[List[List[float]]] = [[] for _ in range(len(texts))]
-        num_tokens_in_batch: List[List[int]] = [[] for _ in range(len(texts))]
-        for i in range(len(indices)):
-            if self.skip_empty and len(batched_embeddings[i]) == 1:
-                continue
-            results[indices[i]].append(batched_embeddings[i])
-            num_tokens_in_batch[indices[i]].append(len(tokens[i]))
-
-        for i in range(len(texts)):
-            _result = results[i]
-            if len(_result) == 0:
-                average = self.embed_with_retry(
-                    input="",
-                    **self._emb_invocation_params,
-                ).data[0].embedding
-            else:
-                average = np.average(_result, axis=0, weights=num_tokens_in_batch[i])
-            embeddings[i] = (average / np.linalg.norm(average)).tolist()
-
-        return embeddings
-
-    def embed_documents(
-        self,
-        texts: List[str],
-    ) -> List[List[float]]:
-        """Call out to 's embedding endpoint for embedding search docs.
-
-        Args:
-            texts: The list of texts to embed.
-
-        Returns:
-            List of embeddings, one for each text.
-        """
-        # NOTE: to keep things simple, we assume the list may contain texts longer
-        #       than the maximum context and use length-safe embedding function.
-        return self._get_len_safe_embeddings(texts)
-
-
-    def embed_query(self, text: str) -> List[float]:
-        """Call out to OpenAI's embedding endpoint for embedding query text.
-
-        Args:
-            text: The text to embed.
-
-        Returns:
-            Embedding for the text.
-        """
-        return self.embed_documents([text])[0]
-
-
-    def get_embedding_dim(self) -> int:
-        """Get the embedding dimension."""
-        if self.embedding_model == "text-embedding-ada-002":
-            embedding_dim = 1536
-        else:
-            raise ValueError(f"Unknown embedding model: {self.embedding_model}")
-        return embedding_dim
 
 
     def create_completion(
@@ -285,17 +129,10 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
             messages=[
               {
                 "role": "user",
-                "content": [
+                "parts": [
                   {
-                    "type": "text",
-                    "text": "What’s in this image?"
+                    "text": "What's in this image?"
                   },
-                  {
-                    "type": "image_url",
-                    "image_url": {
-                      "url": f"data:image/jpeg;base64,{base64_image}"
-                    }
-                  }
                 ]
               }
             ],
@@ -313,12 +150,12 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
         @backoff.on_exception(
             backoff.constant,
             (
-                APIError,
-                RateLimitError,
-                APITimeoutError),
+                APIError, ClientError, ServerError, UnknownFunctionCallArgumentError, UnsupportedFunctionError, FunctionInvocationError
+            ),
             max_tries=self.retries,
             interval=10,
         )
+
         def _generate_response_with_retry(
             messages: List[Dict[str, str]],
             model: str,
@@ -327,37 +164,36 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
             max_tokens: int = 512,
         ) -> Tuple[str, Dict[str, int]]:
 
-            """Send a request to the OpenAI API."""
-            if self.provider_cfg[PROVIDER_SETTING_IS_AZURE]:
-                response = self.client.chat.completions.create(model=model,
-                messages=messages,
-                temperature=temperature,
-                seed=seed,
-                max_tokens=max_tokens,)
-            elif model.startswith("o3"):
-                response = self.client.chat.completions.create(model=model,
-                messages=messages,
-                temperature=temperature,
-                seed=seed,
-                max_completion_tokens=max_tokens,)
-            else:
-                response = self.client.chat.completions.create(model=model,
-                messages=messages,
-                temperature=temperature,
-                seed=seed,
-                max_tokens=max_tokens,)
+            system_content = None
+            for index, message in enumerate(messages):
+                if message["role"] == "system":
+                    system_content = message["parts"][0]["text"]
+                    # remove the system message from the messages list
+                    messages.pop(index)
+                    break
 
+            logger.write("Requesting completion..., System content: " + system_content)
+
+            """Send a request to the Gemini API."""
+            response = self.client.models.generate_content(
+                model=model,
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=temperature,
+                    seed=seed,
+                )
+            )
+            print(response)
             if response is None:
-                logger.error("Failed to get a response from OpenAI. Try again.")
+                logger.error("Failed to get a response from Gemini. Try again.")
                 logger.double_check()
 
-            message = response.choices[0].message.content
+            message = response.candidates[0].content.parts[0].text
 
             info = {
-                "prompt_tokens" : response.usage.prompt_tokens,
-                "completion_tokens" : response.usage.completion_tokens,
-                "total_tokens" : response.usage.total_tokens,
-                "system_fingerprint" : response.system_fingerprint,
+                "input_tokens": response.usage_metadata.prompt_token_count,  # Gemini 的输入 Token
+                "output_tokens": response.usage_metadata.candidates_token_count  # Gemini 的输出 Token
             }
 
             logger.write(f'Response received from {model}.')
@@ -371,6 +207,7 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
             seed,
             max_tokens,
         )
+
 
     async def create_completion_async(
             self,
@@ -393,12 +230,12 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
         @backoff.on_exception(
             backoff.constant,
             (
-                    APIError,
-                    RateLimitError,
-                    APITimeoutError),
+                    APIError, ClientError, ServerError, UnknownFunctionCallArgumentError, UnsupportedFunctionError, FunctionInvocationError
+            ),
             max_tries=self.retries,
             interval=10,
         )
+
         async def _generate_response_with_retry_async(
                 messages: List[Dict[str, str]],
                 model: str,
@@ -407,37 +244,33 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
                 max_tokens: int = 512,
         ) -> Tuple[str, Dict[str, int]]:
 
-            """Send a request to the OpenAI API."""
-            if self.provider_cfg[PROVIDER_SETTING_IS_AZURE]:
-                response = await asyncio.to_thread(
-                    self.client.chat.completions.create,
-                    model=model,
-                    messages=messages,
+            system_content = None
+            for index, message in enumerate(messages):
+                if message["role"] == "system":
+                    system_content = message["parts"][0]["text"]
+                    messages.pop(index)
+                    break
+
+            """Send a request to the Gemini API."""
+            response = self.client.models.generate_content(
+                model=model,
+                contents=messages,
+                config=types.GenerateContentConfig(
+                    max_output_tokens=max_tokens,
                     temperature=temperature,
                     seed=seed,
-                    max_tokens=max_tokens,
                 )
-            else:
-                response = await asyncio.to_thread(
-                    self.client.chat.completions.create,
-                    model=model,
-                    messages=messages,
-                    temperature=temperature,
-                    seed=seed,
-                    max_tokens=max_tokens,
-                )
+            )
 
             if response is None:
                 logger.error("Failed to get a response from OpenAI. Try again.")
                 logger.double_check()
 
-            message = response.choices[0].message.content
+            message = response.content[0].text
 
             info = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-                "system_fingerprint": response.system_fingerprint,
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
             }
 
             logger.write(f'Response received from {model}.')
@@ -501,10 +334,6 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
         return num_tokens
 
 
-    def _get_azure_deployment_id_for_model(self, model_label) -> list:
-        return self.provider_cfg[PROVIDER_SETTING_DEPLOYMENT_MAP][model_label]
-
-
     def assemble_prompt_tripartite(self, template_str: str = None, params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
 
         """
@@ -524,9 +353,8 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
         system_content = filtered_paragraphs[0]  # the system content defaults to the first paragraph of the template
         system_message = {
             "role": "system",
-            "content": [
+            "parts": [
                 {
-                    "type": "text",
                     "text": f"{system_content}"
                 }
             ]
@@ -543,12 +371,13 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
 
         user_messages_part1_paragraphs = filtered_paragraphs[1:image_introduction_paragraph_index]
         user_messages_part2_paragraphs = filtered_paragraphs[image_introduction_paragraph_index + 1:]
-
+        
         combined_user_message = {
             "role": "user",
-            "content": [
+            "parts": [
             ]
         }
+
         # assemble user messages part 1
         user_messages_part1_contents = []
         for paragraph in user_messages_part1_paragraphs:
@@ -574,36 +403,55 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
                     else:
                         raise ValueError(f"Unexpected input type: {type(paragraph_input)}")
 
-        if len(user_messages_part1_contents) > 0:
-
-            user_messages_part1_content = "\n\n".join(user_messages_part1_contents)
-
-            # user_messages_part1 = {
-            #     "role": "user",
-            #     "content": [
-            #         {
-            #             "type": "text",
-            #             "text": f"{user_messages_part1_content}"
-            #         }
-            #     ]
-            # }
-            
-            combined_user_message["content"].append({
-                        "type": "text",
-                        "text": f"{user_messages_part1_content}"
-                    })
-
-        else:
-            user_messages_part1 = None
+        user_messages_part1_content = "\n\n".join(user_messages_part1_contents)
+        # user_messages_part1 = {
+        #     "role": "user",
+        #     "parts": [
+        #         {
+        #             "text": f"{user_messages_part1_content}"
+        #         }
+        #     ]
+        # }
+        combined_user_message["parts"].append({
+            "text": f"{user_messages_part1_content}"
+        })
 
         # assemble image introduction messages
         image_introduction_messages = []
-
-        paragraph_input = params.get(constants.IMAGES_INPUT_TAG_NAME, []) # 'image_introduction'
+        paragraph_input = params.get(constants.IMAGES_INPUT_TAG_NAME, None)
 
         if paragraph_input is None or paragraph_input == "" or paragraph_input == []:
             image_introduction_messages = []
         else:
+            # paragraph_content_pre = image_introduction_paragraph.replace(constants.IMAGES_INPUT_TAG, "")
+            # message = {
+            #     "role": "user",
+            #     "parts": [
+            #         {
+            #             "text": f"{paragraph_content_pre}"
+            #         }
+            #     ]
+            # }
+
+            # image_introduction_messages.append(message)
+
+            # path = params["image_path"] if "image_path" in params else ""
+            # if path is not None and path != "":
+            #     with open(path, 'rb') as file:
+            #         binary_content = file.read()  # 读取文件内容
+            #         base64_encoded = base64.standard_b64encode(binary_content)  # 转换为 Base64
+            #         base64_string = base64_encoded.decode('utf-8')
+            #     encoded_images = [base64_string]
+
+            #     for encoded_image in encoded_images:
+            #         msg_content = {
+            #             "inline_data": {
+            #                 "mime_type": "image/jpeg",
+            #                 "data": encoded_image
+            #             }
+            #         }
+
+            #         message["parts"].append(msg_content)
             # paragraph_content_pre = image_introduction_paragraph.replace(constants.IMAGES_INPUT_TAG, "")
             paths = params["image_paths"] if "image_paths" in params else []
             print("--------------------------------")
@@ -616,20 +464,17 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
 
             for i, encoded_image in enumerate(reversed(encoded_images)):
                 msg_text = "This is a screenshot of the current step of the game." if i == 0 else f"This is the game screenshot from {i} steps ago"
-                combined_user_message["content"].append({
-                    "type": "text",
+                combined_user_message["parts"].append({
                     "text": f"{msg_text}"
                 })
                 msg_content = {
-                    "type": "image_url",
-                    "image_url":
+                    "inline_data":
                         {
-                            "url": f"{encoded_image}"
+                            "mime_type": "image/jpeg",
+                            "data": encoded_image
                         }
                 }
-                combined_user_message["content"].append(msg_content)
-
-
+                combined_user_message["parts"].append(msg_content)
         # assemble user messages part 2
         user_messages_part2_contents = []
         for paragraph in user_messages_part2_paragraphs:
@@ -649,9 +494,6 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
                     if isinstance(paragraph_input, str):
                         paragraph_content = paragraph.replace(placeholder, paragraph_input)
                         user_messages_part2_contents.append(paragraph_content)
-                    elif isinstance(paragraph_input, bool) or isinstance(paragraph_input, int) or isinstance(paragraph_input, float):
-                        paragraph_content = paragraph.replace(placeholder, str(paragraph_input))
-                        user_messages_part2_contents.append(paragraph_content)
                     elif isinstance(paragraph_input, list):
                         paragraph_content = paragraph.replace(placeholder, json.dumps(paragraph_input))
                         user_messages_part2_contents.append(paragraph_content)
@@ -661,26 +503,23 @@ class OpenAIProvider(LLMProvider, EmbeddingProvider):
         user_messages_part2_content = "\n\n".join(user_messages_part2_contents)
         user_messages_part2 = {
             "role": "user",
-            "content": [
+            "parts": [
                 {
-                    "type": "text",
                     "text": f"{user_messages_part2_content}"
                 }
             ]
         }
         
-        combined_user_message["content"].append({
-            "type": "text",
-            "text": f"{user_messages_part2_content}"
-        })
+        combined_user_message["parts"].append({
+             "text": f"{user_messages_part2_content}"
+         })
 
         # if user_messages_part1 is None:
-        #     return [system_message] + image_introduction_messages + [combined_user_message]
+        #     return [system_message] + image_introduction_messages + [user_messages_part2]
         # else:
         #     return [system_message] + [user_messages_part1] + image_introduction_messages + [user_messages_part2]
         
         return [system_message] + [combined_user_message]
-
 
     def assemble_prompt_paragraph(self, template_str: str = None, params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         raise NotImplementedError("This method is not implemented yet.")

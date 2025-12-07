@@ -16,7 +16,7 @@ from stardojo.environment.ui_control_factory import UIControlFactory
 from stardojo.gameio.io_env import IOEnvironment
 from stardojo.gameio.game_manager import GameManager
 from stardojo.planner.stardew_planner import StardewPlanner
-from log_processor import process_log_messages
+from agent.log_processor import process_log_messages
 from env.stardew_env import *
 import logging
 from env.env_constants import *

@@ -43,22 +43,22 @@
         ],
         "prompt_paths": {
             "inputs": {
-                "action_planning": "./res/stardew/prompts/inputs/action_planning.json",
-                "information_gathering": "./res/stardew/prompts/inputs/information_gathering.json",
-                "success_detection": "./res/stardew/prompts/inputs/success_detection.json",
-                "self_reflection": "./res/stardew/prompts/inputs/self_reflection.json",
-                "task_inference": "./res/stardew/prompts/inputs/task_inference.json",
-                "information_text_gathering": "./res/stardew/prompts/inputs/information_text_gathering.json",
-                "information_toolbar_gathering": "./res/stardew/prompts/inputs/information_toolbar_gathering.json"
+                "action_planning": "agent/res/stardew/prompts/inputs/action_planning.json",
+                "information_gathering": "agent/res/stardew/prompts/inputs/information_gathering.json",
+                "success_detection": "agent/res/stardew/prompts/inputs/success_detection.json",
+                "self_reflection": "agent/res/stardew/prompts/inputs/self_reflection.json",
+                "task_inference": "agent/res/stardew/prompts/inputs/task_inference.json",
+                "information_text_gathering": "agent/res/stardew/prompts/inputs/information_text_gathering.json",
+                "information_toolbar_gathering": "agent/res/stardew/prompts/inputs/information_toolbar_gathering.json"
             },
             "templates": {
-                "action_planning": "./res/stardew/prompts/templates/action_planning_cultivation.prompt",
-                "information_gathering": "./res/stardew/prompts/templates/information_gathering_cultivation.prompt",
-                "success_detection": "./res/stardew/prompts/templates/success_detection.prompt",
-                "self_reflection": "./res/stardew/prompts/templates/self_reflection_cultivation.prompt",
-                "task_inference": "./res/stardew/prompts/templates/task_inference_cultivation.prompt",
-                "information_text_gathering": "./res/stardew/prompts/templates/information_text_gathering.prompt",
-                "information_toolbar_gathering": "./res/stardew/prompts/templates/information_toolbar_gathering_cultivation.prompt"
+                "action_planning": "agent/res/stardew/prompts/templates/action_planning_cultivation.prompt",
+                "information_gathering": "agent/res/stardew/prompts/templates/information_gathering_cultivation.prompt",
+                "success_detection": "agent/res/stardew/prompts/templates/success_detection.prompt",
+                "self_reflection": "agent/res/stardew/prompts/templates/self_reflection_cultivation.prompt",
+                "task_inference": "agent/res/stardew/prompts/templates/task_inference_cultivation.prompt",
+                "information_text_gathering": "agent/res/stardew/prompts/templates/information_text_gathering.prompt",
+                "information_toolbar_gathering": "agent/res/stardew/prompts/templates/information_toolbar_gathering_cultivation.prompt"
             }
         }
     },

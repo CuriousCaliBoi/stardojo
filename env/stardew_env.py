@@ -7,7 +7,8 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from utils import utils
+# Import from env.utils to avoid conflict with agent.utils
+from env.utils import utils
 
 sys.path.append(os.path.dirname((os.path.abspath(__file__))))
 import observation

@@ -210,7 +210,13 @@ class Config(metaclass=Singleton):
         }
 
         # Full screen resolution for normalizing mouse movement
-        self.screen_resolution = stardojo.gameio.gui_utils.get_screen_size()
+        try:
+            from stardojo.gameio.gui_utils import get_screen_size
+            self.screen_resolution = get_screen_size()
+        except (ImportError, AttributeError):
+            # Fallback if gui_utils not available
+            import pyautogui
+            self.screen_resolution = pyautogui.size()
         self.mouse_move_factor = self.screen_resolution[0] / self.base_resolution[0]
 
         # self._check_ide_window_info()

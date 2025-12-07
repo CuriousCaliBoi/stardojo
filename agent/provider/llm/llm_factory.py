@@ -1,6 +1,6 @@
 from stardojo.provider.llm.openai import OpenAIProvider
 from stardojo.provider.llm.claude import ClaudeProvider
-from stardojo.provider.llm.gemini import GeminiProvider
+# Gemini import is lazy - only imported when needed
 from stardojo.utils import Singleton
 
 

@@ -18,9 +18,20 @@ TASK_SUITE_PATH = os.path.join(tasks_path, "task_suite")
 def load_task(type: str, id: int) -> base.TaskBase:
     filename = type + ".yaml"
     task_path = os.path.join(TASK_SUITE_PATH, filename)
+    if not os.path.exists(task_path):
+        raise FileNotFoundError(f"Task file not found: {task_path}")
     with open(task_path, 'r', encoding='utf-8') as file:
         task_dict: dict = yaml.safe_load(file)
 
+    if not task_dict:
+        raise ValueError(f"Task file {task_path} is empty or invalid")
+    
+    if id < 0 or id >= len(task_dict):
+        raise IndexError(
+            f"Task ID {id} out of range. "
+            f"Task file '{filename}' has {len(task_dict)} tasks (IDs 0-{len(task_dict)-1})"
+        )
+    
     task_key, task_value = list(task_dict.items())[id]
     llm_description = task_key
     object = task_value["object"]

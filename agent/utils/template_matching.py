@@ -4,7 +4,7 @@ import time
 from typing import List, Union
 
 import cv2
-from MTM import matchTemplates, drawBoxesOnRGB
+from mtm import matchTemplates
 import numpy as np
 from PIL import Image
 
@@ -16,6 +16,49 @@ from stardojo.utils.json_utils import save_json
 
 config = Config()
 logger = Logger()
+
+
+def drawBoxesOnRGB(image, detection, showLabel=True, boxThickness=2, boxColor=(0, 255, 0), 
+                   labelColor=(0, 255, 0), labelScale=1):
+    """
+    Draw bounding boxes on an RGB image.
+    Compatible with MTM's drawBoxesOnRGB function signature.
+    
+    Args:
+        image: Input RGB image (numpy array)
+        detection: DataFrame or dict with 'BBox' and optionally 'TemplateName' columns
+        showLabel: Whether to show labels
+        boxThickness: Thickness of bounding box lines
+        boxColor: Color of bounding boxes (BGR format)
+        labelColor: Color of label text (BGR format)
+        labelScale: Scale of label text
+    
+    Returns:
+        Image with bounding boxes drawn
+    """
+    overlay = image.copy()
+    
+    # Handle DataFrame or dict
+    if hasattr(detection, 'BBox'):
+        bboxes = detection['BBox']
+        labels = detection.get('TemplateName', [''] * len(bboxes)) if showLabel else [''] * len(bboxes)
+    elif isinstance(detection, dict):
+        bboxes = detection.get('BBox', [])
+        labels = detection.get('TemplateName', [''] * len(bboxes)) if showLabel else [''] * len(bboxes)
+    else:
+        return overlay
+    
+    for bbox, label in zip(bboxes, labels):
+        if len(bbox) >= 4:
+            x, y, w, h = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+            # Draw bounding box
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), boxColor, boxThickness)
+            # Draw label if requested
+            if showLabel and label:
+                cv2.putText(overlay, str(label), (x, y - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, labelScale, labelColor, 2)
+    
+    return overlay
 
 
 def render(overlay, template_image, output_file_name='', view=False):

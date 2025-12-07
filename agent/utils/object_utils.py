@@ -6,8 +6,11 @@ import numpy as np
 
 try:
     from groundingdino.util.inference import load_model, load_image
-except:
-    pass
+    GROUNDINGDINO_AVAILABLE = True
+except ImportError:
+    GROUNDINGDINO_AVAILABLE = False
+    load_model = None
+    load_image = None
 
 from stardojo.utils.singleton import Singleton
 from stardojo.config import Config

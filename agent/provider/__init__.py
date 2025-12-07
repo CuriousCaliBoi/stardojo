@@ -6,7 +6,8 @@ from .base.base_llm import LLMProvider
 from .llm.openai import OpenAIProvider
 from .llm.claude import ClaudeProvider
 from .llm.restful_claude import RestfulClaudeProvider
-from .llm.gemini import GeminiProvider
+# Gemini import is lazy - only imported when needed (not used with OpenAI)
+# from .llm.gemini import GeminiProvider
 
 # from .circle_detector import CircleDetectProvider
 # from .sam_provider import SamProvider

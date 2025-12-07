@@ -1,11 +1,15 @@
 import os.path
+import sys
+import time
+import atexit
 
-from stardew_env import *
-from agent.stardojo.stardojo_react_agent import *
-from tasks.base import *
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from env.stardew_env import *
+from agent.stardojo_react_agent import *
 import importlib.util
 import uuid
-import sys
 import logging
 from env.tasks.base import *
 from env.tasks.utils import load_task
@@ -83,7 +87,17 @@ class StarDojoLLM(StarDojo):
         self.step_num = 0
         self.task_proxy = InitTaskProxy(port)
         if task is not None:
-            self.action_proxy.wait_for_server()
+            # Wait for server connection before proceeding
+            try:
+                self.action_proxy.wait_for_server()
+            except ConnectionError as e:
+                raise ConnectionError(
+                    f"Failed to connect to game server: {e}\n"
+                    f"Please ensure:\n"
+                    f"1. Stardew Valley is running with the mod loaded\n"
+                    f"2. The mod is listening on port {port}\n"
+                    f"3. Check the SMAPI console for any mod errors"
+                ) from e
             task.init_task(self.task_proxy)
             self.action_proxy.set_mmap_reader()
             self.agent.reconfigure_root_logger(port=None, task=None)
@@ -295,7 +309,14 @@ class StarDojoLLM(StarDojo):
         # observation, reward (not yet), terminated (not yet), truncated (not yet), info
         self.step_count += 1
         
-        return self.obs, 0, self.task.evaluate(self.obs, self.task_proxy)['completed'], False, info
+        try:
+            task_result = self.task.evaluate(self.obs, self.task_proxy)
+            terminated = task_result.get('completed', False) if isinstance(task_result, dict) else False
+        except Exception as e:
+            logging.error(f"Error evaluating task: {e}")
+            terminated = False
+        
+        return self.obs, 0, terminated, False, info
         # return self.obs, 0, False, False, info
 
 
@@ -323,9 +344,15 @@ def run_stardojo(
 
     config.checkpoint_interval = checkpoint_interval
 
-    config.load_env_config(env_config_path)
+    try:
+        config.load_env_config(env_config_path)
+    except Exception as e:
+        raise FileNotFoundError(f"Failed to load environment config from {env_config_path}: {e}")
 
-    task = load_task.load_task(task_name, task_id)
+    try:
+        task = load_task.load_task(task_name, task_id)
+    except (FileNotFoundError, IndexError, ValueError) as e:
+        raise ValueError(f"Failed to load task '{task_name}' with ID {task_id}: {e}")
     
     if task.difficulty == "easy":
         config.max_turn_count = 30
@@ -334,13 +361,24 @@ def run_stardojo(
     else:
         config.max_turn_count = 200
 
-    react_agent = PipelineRunner(
-        llm_provider_config_path=llm_config_path,
-        embed_provider_config_path=embed_config_path,
-        task_description=task.llm_description,
-        use_self_reflection=False,
-        use_task_inference=False
-    )
+    try:
+        react_agent = PipelineRunner(
+            llm_provider_config_path=llm_config_path,
+            embed_provider_config_path=embed_config_path,
+            task_description=task.llm_description,
+            use_self_reflection=False,
+            use_task_inference=False
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize agent: {e}\nCheck your LLM config and API keys.") from e
+    
+    def exit_cleanup(agent):
+        """Cleanup function for atexit"""
+        try:
+            agent.pipeline_shutdown()
+        except:
+            pass
+    
     atexit.register(exit_cleanup, react_agent)
 
     stardojo_env = StarDojoLLM(
@@ -355,10 +393,18 @@ def run_stardojo(
         output_video=output_video
     )
 
+    # Give the environment a moment to fully initialize
     time.sleep(1)
 
     terminated = truncated = False
     step = 0
+    max_steps = config.max_turn_count
+    print(f"\n{'='*60}")
+    print(f"Starting task: {task.llm_description}")
+    print(f"Max steps: {max_steps}")
+    print(f"Port: {port}")
+    print(f"{'='*60}\n")
+    
     while not terminated and not truncated:
         try:
             logging.info(f"Running Task: {task.llm_description}, Step {step}")
@@ -398,9 +444,9 @@ if __name__ == "__main__":
     parser.add_argument("--task_name", type=str, default="farming_lite", help="Name of the task to load")
     parser.add_argument("--task_id", type=int, default=0, help="ID of the task to load")
     parser.add_argument("--checkpoint_interval", type=int, default=5, help="Interval of saving checkpoints")
-    parser.add_argument("--env_config_path", type=str, default="./conf/env_config_stardew.json", help="Path to environment config")
-    parser.add_argument("--llm_config_path", type=str, default="./conf/openai_config.json", help="Path to LLM config")
-    parser.add_argument("--embed_config_path", type=str, default="./conf/openai_config.json", help="Path to embedding config")
+    parser.add_argument("--env_config_path", type=str, default="agent/conf/env_config_stardew.json", help="Path to environment config")
+    parser.add_argument("--llm_config_path", type=str, default="agent/conf/openai_config.json", help="Path to LLM config")
+    parser.add_argument("--embed_config_path", type=str, default="agent/conf/openai_config.json", help="Path to embedding config")
 
     args = parser.parse_args()
 
